@@ -7,10 +7,6 @@ Created on Fri Mar 22 11:59:29 2024
 @author: IGOR POLEV
 """
 
-ABOUT_TEXT = """
-Google links parser. Use 'goo-getf -h' for help.
-"""
-
 HELP_TEXT = """
 USAGE:
     
@@ -37,10 +33,8 @@ OPTIONS:
 """
 
 import sys, getopt
-import os.path
 
 from contextlib import closing
-from itertools  import compress
 from bs4        import BeautifulSoup
 
 class GooGetFiles:
@@ -65,98 +59,101 @@ class GooGetFiles:
                 self.flags.append('fol')
             if opt in ['--folders-only', '--fo']:
                 self.flags = ['fol']
-        if not self.files:
-            if not opts:
-                print(ABOUT_TEXT)
-                sys.exit(0)
-            else:
-                sys.stderr.write("No files to parse specified.\n")
-                sys.exit(1)
-        bad_files = list(map(lambda x: not(os.path.exists(x)), self.files))
-        if any(bad_files):
-            sys.stderr.write("Files not found: {}\n".format(
-                list(compress(self.files, bad_files))
-            ))
-            sys.exit(2)
-            
+        if self.files:
+            self.pipe_mod = False
+        else:
+            self.pipe_mod = True
+
         # Parsable links
         self.parsable_links = {
             'colab.research.google.com/github/' : {
-                'flag'     : 'def',
-                'term_str' : '',
-                'dl_link'  : ''
+                'flag'    : 'def',
+                'dl_link' : ''
             },
             'drive.google.com/drive/folders/' : {
-                'flag'     : 'fol',
-                'term_str' : '',
-                'dl_link'  : ''
+                'flag'    : 'fol',
+                'dl_link' : ''
             },
             'drive.google.com/file/d/' : {
-                'flag'     : 'def',
-                'term_str' : '/',
-                'dl_link'  : 'https://drive.usercontent.google.com/download?id={}&export=download&authuser=0'
+                'flag'    : 'def',
+                'dl_link' : 'https://drive.usercontent.google.com/download?id={}'
             },
             'docs.google.com/document/d/' : {
-                'flag'     : 'doc',
-                'term_str' : '/',
-                'dl_link'  : 'https://docs.google.com/document/export?format=docx&id={}'
+                'flag'    : 'doc',
+                'dl_link' : 'https://docs.google.com/document/export?format=docx&id={}'
             },
             'docs.google.com/presentation/d/' : {
-                'flag'     : 'doc',
-                'term_str' : '/',
-                'dl_link'  : 'https://docs.google.com/presentation/export?format=pptx&id={}'
+                'flag'    : 'doc',
+                'dl_link' : 'https://docs.google.com/presentation/export?format=pptx&id={}'
             },
             'docs.google.com/spreadsheets/d/' : {
-                'flag'     : 'doc',
-                'term_str' : '/',
-                'dl_link'  : 'https://docs.google.com/spreadsheets/d/{}/export?format=xlsx'
+                'flag'    : 'doc',
+                'dl_link' : 'https://docs.google.com/spreadsheets/d/{}/export?format=xlsx'
             },
             'colab.research.google.com/drive/' : {
-                'flag'     : 'def',
-                'term_str' : '?',
-                'dl_link'  : 'https://drive.usercontent.google.com/download?id={}&export=download&authuser=0'
+                'flag'    : 'def',
+                'dl_link' : 'https://drive.usercontent.google.com/download?id={}'
             }
         }
         self.parsable_keys = self.parsable_links.keys()
+        for key in self.parsable_keys:
+            self.parsable_links[key]['key_len'] = len(key)
 
-    def parse(self):
-        for fl in self.files:
-            with closing(open(fl, 'r')) as file:
-                hrefs = BeautifulSoup(file.read(), 'html.parser').find_all('a')
-            if not hrefs:
+    def run(self):
+        if self.pipe_mod:
+            for file in sys.stdin:
+                self.parse_file(file.rstrip('\n'))
+        else:
+            for file in self.files:
+                self.parse_file(file)
+
+    def parse_file(self, file):
+
+        try:
+            with closing(open(file, 'r')) as fl:
+                hrefs = BeautifulSoup(fl.read(), 'html.parser').find_all('a')
+        except IOError as err:
+            sys.stderr.write("IO error: {} while processing file {}\n".format(err, file))
+            return
+        except OSError as err:
+            sys.stderr.write("OS error: {} while processing file {}\n".format(err, file))
+            return
+        if not hrefs:
+            return
+
+        hrefs = list(map(lambda h: h.get('href'), hrefs))
+        for key in self.parsable_keys:
+            if not self.parsable_links[key]['flag'] in self.flags:
                 continue
-            hrefs = list(map(lambda h: h.get('href'), hrefs))
-            for key in self.parsable_keys:
-                if not self.parsable_links[key]['flag'] in self.flags:
+            dl_link = self.parsable_links[key]['dl_link']
+            key_len = self.parsable_links[key]['key_len']
+            for href in hrefs:
+                if not href:
                     continue
-                dl_link  = self.parsable_links[key]['dl_link']
-                term_str = self.parsable_links[key]['term_str']
-                key_len  = len(key)
-                for href in hrefs:
-                    if not href:
-                        continue
-                    if not dl_link:
-                        print(href)
-                        continue
-                    id_start = href.find(key)
-                    if id_start == -1:
-                        continue
-                    id_start += key_len
-                    id_end = href.find(term_str, id_start)
-                    if id_end == -1:
-                        id_end = len(href) - 1
-                    print(dl_link.format(href[id_start : id_end]))
+                id_start = href.find(key)
+                if id_start == -1:
+                    continue
+                if not dl_link:
+                    print(href)
+                    continue
+                id_start += key_len
+                id_stop = len(href) - 1
+                for term_sym in '/?#':
+                    sym_idx = href.find(term_sym, id_start)
+                    if sym_idx != -1 and sym_idx < id_stop:
+                        id_stop = sym_idx
+                print(dl_link.format(href[id_start : id_stop]))
 
 if __name__ == "__main__":
     try:
         script = GooGetFiles(sys.argv[1:])
-        script.parse()
+        script.run()
     except getopt.GetoptError as err:
         sys.stderr.write(
             "Bad command-line arguments: {}.\nUse 'goo-getf -h' for help.\n".format(err)
         )
-        sys.exit(3)
+        sys.exit(2)
     except Exception as err:
-        sys.stderr.write("Unexpected error: {}.\n".format(err))
-        sys.exit(4)
+        sys.stderr.write("Unexpected error: {}\n".format(err))
+        sys.exit(3)
     sys.exit(0)
